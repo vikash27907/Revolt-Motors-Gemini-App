@@ -1,3 +1,4 @@
+<img width="2869" height="1627" alt="image" src="https://github.com/user-attachments/assets/70bed8c5-ffa2-463b-897c-939ff0a99ecc" />
 Real-Time Conversational AI Voice Assistant
 This project is a real-time, conversational voice interface that replicates the functionality of a customer service chatbot, like the one used by Revolt Motors. It leverages the Gemini API for natural language understanding and generation, and uses a secure server-to-server architecture to protect API keys. The interface supports continuous, hands-free operation and allows the user to interrupt the AI for a fluid, natural conversation.
 
