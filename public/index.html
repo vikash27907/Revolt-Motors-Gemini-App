@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conversational Voice Interface</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom animation for the listening pulse */
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 10px 20px rgba(239, 68, 68, 0);
+            }
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+        .listening-animation {
+            animation: pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl text-center">
+        <h1 class="text-4xl md:text-5xl font-bold mb-2">Revolt AI Assistant</h1>
+        <p class="text-gray-400 mb-8">Tap the microphone to activate hands-free mode.</p>
+    </div>
+
+    <!-- Main container for the chat interface -->
+    <div class="w-full max-w-2xl h-[60vh] bg-gray-800 rounded-2xl shadow-2xl flex flex-col">
+        
+        <!-- Chat messages display area -->
+        <div id="chat-container" class="flex-1 p-6 overflow-y-auto">
+            <!-- Initial welcome message from the bot -->
+            <div class="flex justify-start mb-4">
+                <div class="bg-indigo-600 rounded-lg p-3 max-w-xs md:max-w-md">
+                    <p class="text-sm">Hello! I'm the Revolt AI assistant. How can I help you today? You can ask me about our bikes, booking a test ride, or our features.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status and control area -->
+        <div class="p-6 border-t border-gray-700 flex flex-col items-center justify-center">
+            <p id="status" class="text-gray-400 text-sm mb-4 h-5">Tap to start listening</p>
+            <button id="mic-button" class="bg-gray-600 hover:bg-red-700 transition-all duration-300 rounded-full w-20 h-20 flex items-center justify-center shadow-lg focus:outline-none">
+                <svg id="mic-icon" xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Error Modal -->
+    <div id="error-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
+        <div class="bg-gray-800 rounded-lg p-6 max-w-sm w-full text-center shadow-xl">
+            <h3 class="text-xl font-bold mb-4">Error</h3>
+            <p id="error-message" class="text-gray-300 mb-6"></p>
+            <button onclick="document.getElementById('error-modal').classList.add('hidden')" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">
+                Close
+            </button>
+        </div>
+    </div>
+
+
+    <script>
+        // DOM element references
+        const micButton = document.getElementById('mic-button');
+        const chatContainer = document.getElementById('chat-container');
+        const statusElement = document.getElementById('status');
+        const errorModal = document.getElementById('error-modal');
+        const errorMessage = document.getElementById('error-message');
+
+        // State management
+        let isHandsFreeActive = false; 
+        let chatHistory = [];
+        let speechTimeout; 
+        let finalTranscript = ''; 
+        let wasManuallyCancelled = false; 
+
+        // --- Core Application Logic ---
+
+        // 1. Speech Recognition (Speech-to-Text) Setup
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true; 
+            recognition.interimResults = true; 
+            recognition.lang = 'en-US';
+            
+            recognition.onresult = (event) => {
+                clearTimeout(speechTimeout);
+                
+                let interimTranscript = '';
+                finalTranscript = ''; 
+
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+                
+                statusElement.textContent = interimTranscript || 'Listening...';
+
+                speechTimeout = setTimeout(() => {
+                    if (finalTranscript.trim()) {
+                        addMessageToChat('user', finalTranscript);
+                        getGeminiResponse(finalTranscript);
+                    }
+                    finalTranscript = '';
+                }, 1500); 
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                // FIX: Ignore the 'aborted' error which happens on manual interruption.
+                if (event.error !== 'no-speech' && event.error !== 'audio-capture' && event.error !== 'aborted') {
+                    showError(`Speech recognition error: ${event.error}.`);
+                }
+            };
+            
+            recognition.onend = () => {
+                if (isHandsFreeActive) {
+                    try {
+                        recognition.start();
+                    } catch(e) {
+                        console.error("Could not restart recognition:", e);
+                        stopHandsFreeMode();
+                    }
+                }
+            };
+        } else {
+            showError("Sorry, your browser doesn't support Speech Recognition. Please try Chrome or Edge.");
+            micButton.disabled = true;
+        }
+        
+        // 2. Text-to-Speech (TTS) Setup
+        const synth = window.speechSynthesis;
+        let voices = [];
+
+        function populateVoiceList() {
+            voices = synth.getVoices();
+        }
+        populateVoiceList();
+        if (synth.onvoiceschanged !== undefined) {
+            synth.onvoiceschanged = populateVoiceList;
+        }
+
+        function speak(text) {
+            wasManuallyCancelled = false; 
+            if (synth.speaking) {
+                synth.cancel();
+            }
+
+            if (text !== '') {
+                const utterance = new SpeechSynthesisUtterance(text);
+                
+                utterance.onstart = () => {
+                    statusElement.textContent = 'AI is speaking...';
+                };
+
+                utterance.onend = () => {
+                   if (isHandsFreeActive) {
+                       statusElement.textContent = 'Listening continuously...';
+                   } else {
+                       statusElement.textContent = 'Tap to start listening';
+                   }
+                };
+
+                utterance.onerror = (event) => {
+                    if (wasManuallyCancelled) {
+                        console.log("Speech synthesis cancelled by user interruption.");
+                    } 
+                    // else {
+                    //     console.error('SpeechSynthesisUtterance.onerror', event);
+                    //     showError('An error occurred during speech synthesis.');
+                    // }
+                };
+                
+                const selectedVoice = voices.find(voice => voice.name === 'Google US English') || voices.find(voice => voice.lang === 'en-US');
+                if (selectedVoice) {
+                    utterance.voice = selectedVoice;
+                }
+
+                synth.speak(utterance);
+            }
+        }
+
+        // 3. Gemini API Interaction (via our own backend)
+        async function getGeminiResponse(prompt) {
+            statusElement.textContent = 'Thinking...';
+            addTypingIndicator();
+
+            const apiUrl = '/api/get-gemini-response';
+            
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+            const payload = {
+                chatHistory: chatHistory
+            };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `API request failed with status ${response.status}`);
+                }
+
+                const result = await response.json();
+                removeTypingIndicator();
+                
+                if (result.candidates && result.candidates[0] && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts[0]) {
+                    const botResponse = result.candidates[0].content.parts[0].text;
+                    addMessageToChat('bot', botResponse);
+                    chatHistory.push({ role: "model", parts: [{ text: botResponse }] });
+                    speak(botResponse); 
+                } else {
+                    console.error("Invalid response structure from API:", result);
+                    const responseText = "I'm sorry, I couldn't generate a response.";
+                    addMessageToChat('bot', responseText);
+                    speak(responseText);
+                }
+
+            } catch (error) {
+                console.error('Error calling backend API:', error);
+                removeTypingIndicator();
+                const errorMessageText = "Sorry, I'm having trouble connecting right now.";
+                addMessageToChat('bot', errorMessageText);
+                speak(errorMessageText);
+                showError(error.message);
+            }
+        }
+
+        // --- UI and Helper Functions ---
+        function addMessageToChat(sender, message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex mb-4 ${sender === 'user' ? 'justify-end' : 'justify-start'}`;
+            const messageBubble = document.createElement('div');
+            messageBubble.className = `rounded-lg p-3 max-w-xs md:max-w-md ${sender === 'user' ? 'bg-gray-700' : 'bg-indigo-600'}`;
+            const messageText = document.createElement('p');
+            messageText.className = 'text-sm';
+            messageText.textContent = message;
+            messageBubble.appendChild(messageText);
+            messageDiv.appendChild(messageBubble);
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        function addTypingIndicator() {
+            const typingDiv = document.createElement('div');
+            typingDiv.id = 'typing-indicator';
+            typingDiv.className = 'flex justify-start mb-4';
+            typingDiv.innerHTML = `<div class="bg-indigo-600 rounded-lg p-3 flex items-center space-x-1"><div class="w-2 h-2 bg-white rounded-full animate-bounce" style="animation-delay: -0.3s;"></div><div class="w-2 h-2 bg-white rounded-full animate-bounce" style="animation-delay: -0.15s;"></div><div class="w-2 h-2 bg-white rounded-full animate-bounce"></div></div>`;
+            chatContainer.appendChild(typingDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typing-indicator');
+            if (indicator) indicator.remove();
+        }
+
+        // --- HANDS-FREE FUNCTIONS ---
+        function startHandsFreeMode() {
+            if (SpeechRecognition && !isHandsFreeActive) {
+                isHandsFreeActive = true;
+                wasManuallyCancelled = true;
+                synth.cancel(); 
+                recognition.stop();
+                
+                setTimeout(() => {
+                    if (isHandsFreeActive) {
+                        try {
+                            recognition.start();
+                            micButton.classList.add('bg-red-600', 'listening-animation');
+                            micButton.classList.remove('bg-gray-600');
+                            statusElement.textContent = 'Listening continuously...';
+                        } catch(e) {
+                            console.error("Error starting recognition after delay:", e);
+                            stopHandsFreeMode(); 
+                        }
+                    }
+                }, 250); 
+            }
+        }
+
+        function stopHandsFreeMode() {
+            if (SpeechRecognition && isHandsFreeActive) {
+                isHandsFreeActive = false;
+                wasManuallyCancelled = true; 
+                synth.cancel();
+                recognition.stop();
+                clearTimeout(speechTimeout);
+                micButton.classList.remove('bg-red-600', 'listening-animation');
+                micButton.classList.add('bg-gray-600');
+                statusElement.textContent = 'Tap to start listening';
+            }
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorModal.classList.remove('hidden');
+            errorModal.classList.add('flex');
+        }
+
+        // --- Event Listeners ---
+        micButton.addEventListener('click', () => {
+            if (isHandsFreeActive) {
+                stopHandsFreeMode();
+            } else {
+                startHandsFreeMode();
+            }
+        });
+
+    </script>
+</body>
+</html>
